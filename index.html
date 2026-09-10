@@ -99,7 +99,55 @@ function renderFree(){const l=levels[currentLevel-1],arr=Array.isArray(state.fre
 function normalize(code){return code.replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/.*$/gm,"").replace(/\s+/g,"").trim().toLowerCase()}
 function checkFree(){const code=document.getElementById("freeEditor").value.trim(),out=document.getElementById("freeOutput");if(!code){out.innerHTML='<span class="error">❌ Code লিখো।</span>';return}const key=normalize(code),arr=Array.isArray(state.freeCodes[currentLevel])?state.freeCodes[currentLevel]:[];if(arr.includes(key)){out.innerHTML='<span class="error">❌ এই Code এই Round-এ আগেই ব্যবহার করা হয়েছে।</span>';return}runCode(code,r=>{if(r.error){out.innerHTML='<span class="error">❌ JavaScript Error:\n'+esc(r.error)+'</span>';return}if(!validateGuided(currentLevel,code)){out.innerHTML='<span class="error">⚠️ Code চলছে, কিন্তু এই Level-এর concept যথেষ্টভাবে ব্যবহার করা হয়নি বলে মনে হচ্ছে।</span>';return}arr.push(key);state.freeCodes[currentLevel]=arr;state.xp+=50;state.coins+=10;save();if(arr.length>=10){out.innerHTML='<span class="success">🎉 10/10 Free Practice Complete!</span>';setTimeout(completeLevel,700)}else{out.innerHTML='<span class="success">✅ Accepted!\n\nOutput:\n'+esc(r.output||"(কোনো console output নেই)")+'</span>';setTimeout(renderFree,600)}})}
 function completeLevel(){if(!state.completed.includes(currentLevel))state.completed.push(currentLevel);if(currentLevel===state.unlocked&&state.unlocked<50)state.unlocked++;save();show("challenge");const next=currentLevel<50?`<button id="nextLevel" class="btn green">🚀 Level ${currentLevel+1} শুরু করো</button>`:`<button id="mapBtn" class="btn green">🏆 Level Map</button>`;document.getElementById("challengeContent").innerHTML=`<div class="card complete"><div class="big">🎉</div><h1>Level ${currentLevel} Complete!</h1><p>Practice 1, 2, 3 এবং 10টি Free Practice সম্পূর্ণ হয়েছে।</p><p>⭐ XP: <b>${state.xp}</b> &nbsp; 🪙 Coins: <b>${state.coins}</b></p>${next}</div>`;if(currentLevel<50)document.getElementById("nextLevel").addEventListener("click",()=>openLevel(currentLevel+1));else document.getElementById("mapBtn").addEventListener("click",startGame)}
-function runCode(code,callback){const frame=document.createElement("iframe");frame.sandbox.add("allow-scripts");frame.style.display="none";document.body.appendChild(frame);let done=false;const finish=r=>{if(done)return;done=true;clearTimeout(timer);window.removeEventListener("message",handler);frame.remove();callback(r)};const timer=setTimeout(()=>finish({error:"Execution timed out. Infinite Loop বা অতিরিক্ত কাজ থাকতে পারে.",output:""}),2500);function handler(e){if(e.source===frame.contentWindow)finish(e.data)}window.addEventListener("message",handler);const encoded=JSON.stringify(code);frame.srcdoc=`<!doctype html><html><body><h1 id="title">Hello</h1><div id="message">Message</div><button id="action">Action</button><input id="input" value="Test"><form id="form"><input></form><script>(function(){var logs=[];console.log=function(){logs.push(Array.from(arguments).map(function(v){try{return typeof v==='object'?JSON.stringify(v):String(v)}catch(e){return String(v)}}).join(' '))};window.onerror=function(m){parent.postMessage({error:String(m),output:logs.join('\\n')},'*')};try{var code=${encoded};new Function(code)();parent.postMessage({error:null,output:logs.join('\\n')},'*')}catch(e){parent.postMessage({error:e.name+': '+e.message,output:logs.join('\\n')},'*')}})();<\/script></body></html>`}
+function runCode(code,callback){
+  let finished=false;
+  const finish=(r)=>{if(finished)return;finished=true;try{URL.revokeObjectURL(url)}catch(e){};try{worker.terminate()}catch(e){};clearTimeout(timer);callback(r)};
+  const workerSrc=`
+    (function(){
+      const logs=[];
+      const safe=(v)=>{try{return typeof v==='object' ? JSON.stringify(v) : String(v)}catch(e){return String(v)}};
+      console.log=(...a)=>logs.push(a.map(safe).join(' '));
+      console.warn=(...a)=>logs.push('⚠️ '+a.map(safe).join(' '));
+      console.error=(...a)=>logs.push('❌ '+a.map(safe).join(' '));
+      self.alert=(v)=>logs.push(String(v));
+      self.confirm=(v)=>true;
+      self.prompt=(m,d='')=>d;
+      const els={};
+      function el(id){
+        if(!els[id]){
+          els[id]={id:id,value:'',innerText:'',textContent:'',innerHTML:'',style:{},
+            addEventListener:function(type,fn){this['on'+type]=fn;},
+            click:function(){if(typeof this.onclick==='function')this.onclick({target:this});},
+            appendChild:function(child){return child;},
+            remove:function(){},
+            classList:{add:function(){},remove:function(){},toggle:function(){}}
+          };
+        }
+        return els[id];
+      }
+      ['title','message','action','input','form'].forEach(id=>el(id));
+      el('input').value='Test';
+      self.document={
+        getElementById:(id)=>el(id),
+        querySelector:(sel)=>sel[0]==='#'?el(sel.slice(1)):el(sel),
+        querySelectorAll:(sel)=>[],
+        createElement:(tag)=>el('created_'+Math.random().toString(36).slice(2)),
+        body:el('body'),
+        addEventListener:function(){}
+      };
+      const finish=(error)=>self.postMessage({error:error?String(error):null,output:logs.join('\\n')});
+      try{
+        new Function(${JSON.stringify(code)})();
+        finish(null);
+      }catch(e){finish(e && e.name ? e.name+': '+e.message : String(e));}
+    })();`;
+  const blob=new Blob([workerSrc],{type:'application/javascript'});
+  const url=URL.createObjectURL(blob);
+  const worker=new Worker(url);
+  const timer=setTimeout(()=>finish({error:'Execution timed out. Infinite Loop বা অতিরিক্ত কাজ থাকতে পারে.',output:''}),2500);
+  worker.onmessage=(e)=>finish(e.data||{error:null,output:''});
+  worker.onerror=(e)=>finish({error:'Worker Error: '+(e.message||'Code চালানো যায়নি।'),output:''});
+}
 function esc(v){return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;")}
 function openDetails(){document.getElementById("detailsModal").style.display="block"}function closeDetails(){document.getElementById("detailsModal").style.display="none"}
 document.getElementById("startBtn").addEventListener("click",startGame);document.getElementById("detailsBtn").addEventListener("click",openDetails);document.getElementById("closeDetails").addEventListener("click",closeDetails);document.getElementById("homeBtn").addEventListener("click",goHome);document.getElementById("lessonBack").addEventListener("click",startGame);document.getElementById("challengeBack").addEventListener("click",startGame);document.getElementById("lessonNext").addEventListener("click",startChallenges);document.getElementById("detailsModal").addEventListener("click",e=>{if(e.target.id==="detailsModal")closeDetails()});
